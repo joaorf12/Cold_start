@@ -20,7 +20,6 @@ def limpar_nome(nome):
 data = pd.read_csv("./datasets/data.csv")
 data_by_artist = pd.read_csv("./datasets/data_by_artist.csv")
 
-
 # Gerar a nova coluna 'artists_clean' em ambos os DataFrames
 # Esta coluna conterá os nomes dos artistas em formato limpo
 data['artists_clean'] = data['artists'].apply(limpar_nome)
