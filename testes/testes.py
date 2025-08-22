@@ -14,11 +14,11 @@ plt.rcParams['figure.figsize'] = (12, 7)
 
 # ========== 1. Carga de Dados ==========
 # Carrega os datasets
-user_artists = pd.read_csv('./datasets/user_artists.csv', sep='\t')
-artists = pd.read_csv('./datasets/artists.csv', sep='\t')
-data_by_artist = pd.read_csv('./datasets/data_by_artist.csv')
-data = pd.read_csv('./datasets/data.csv')
-data_w_genres = pd.read_csv('./datasets/data_w_genres.csv')  # Carrega dados com gêneros
+user_artists = pd.read_csv('../datasets/user_artists.csv', sep='\t')
+artists = pd.read_csv('../datasets/artists.csv', sep='\t')
+data_by_artist = pd.read_csv('../datasets/data_by_artist.csv')
+data = pd.read_csv('../datasets/data.csv')
+data_w_genres = pd.read_csv('../datasets/data_w_genres.csv')  # Carrega dados com gêneros
 
 # Simplified artist name cleaning (without unidecode/re as they are not available)
 # Garante que as colunas 'artists' existam antes de tentar limpá-las.

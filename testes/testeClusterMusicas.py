@@ -238,11 +238,11 @@ label_cols = ['gender', 'country']
 
 novo_usuario, persona, playlist, reacao = gerar_recomendacao_completa_com_plot(
     client=client,
-    interacoes_usuarios_artistas=pd.read_csv('./datasets/user_artists.csv', sep='\t'),
-    dados_artistas=pd.read_csv('./datasets/artists.csv'),
-    caracteristicas_por_artistadata_by_artist=pd.read_csv('./datasets/data_by_artist.csv'),
-    musicas_base=pd.read_csv('./datasets/data.csv'),
-    musicas_com_generos=pd.read_csv('./datasets/data_w_genres.csv'),
+    interacoes_usuarios_artistas=pd.read_csv('../datasets/user_artists.csv', sep='\t'),
+    dados_artistas=pd.read_csv('../datasets/artists.csv'),
+    caracteristicas_por_artistadata_by_artist=pd.read_csv('../datasets/data_by_artist.csv'),
+    musicas_base=pd.read_csv('../datasets/data.csv'),
+    musicas_com_generos=pd.read_csv('../datasets/data_w_genres.csv'),
     musical_features=musical_features,
     label_cols=label_cols,
     preference_map=preference_map,

@@ -8,7 +8,7 @@ from sklearn.metrics import silhouette_score
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
-from collections import Counter
+from visualizacao import plotar_clusters
 
 # ==================== Configurações ====================
 load_dotenv()
@@ -215,6 +215,8 @@ def gerar_recomendacao_completa(client, interacoes_usuarios_artistas, dados_arti
     kmeans = KMeans(n_clusters=n_clusters_final, random_state=42, n_init='auto')
     top_artists['cluster'] = kmeans.fit_predict(X_scaled)
 
+    plotar_clusters(top_artists, musical_features)
+
     # --- Usuário e persona ---
     novo_usuario = gerar_novo_usuario_aleatorio(client)
     persona_gerada = criar_persona_chatgpt(novo_usuario, preference_map)
@@ -308,11 +310,11 @@ label_cols = ['gender', 'country']
 
 novo_usuario, persona, playlist, reacao = gerar_recomendacao_completa(
     client,
-    pd.read_csv('./datasets/user_artists.csv', sep='\t'),
-    pd.read_csv('./datasets/artists.csv', sep='\t'),
-    pd.read_csv('./datasets/data_by_artist.csv'),
-    pd.read_csv('./datasets/data.csv'),
-    pd.read_csv('./datasets/data_w_genres.csv'),
+    pd.read_csv('../datasets/user_artists.csv', sep='\t'),
+    pd.read_csv('../datasets/artists.csv', sep='\t'),
+    pd.read_csv('../datasets/data_by_artist.csv'),
+    pd.read_csv('../datasets/data.csv'),
+    pd.read_csv('../datasets/data_w_genres.csv'),
     musical_features,
     label_cols,
     preference_map,
