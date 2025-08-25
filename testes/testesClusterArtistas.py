@@ -281,7 +281,11 @@ def gerar_recomendacao_completa(client, interacoes_usuarios_artistas, dados_arti
     musicas_recomendadas_final = musicas_filtradas.head(num_recommendations_needed)[cols_necessarias]
 
     if not musicas_recomendadas_final.empty:
-        nomes_musicas = musicas_recomendadas_final['name'].tolist()
+        # nomes_musicas = musicas_recomendadas_final['name'].tolist()
+        nomes_musicas = [
+            f"{row['name']} - {row['artists']}"
+            for _, row in musicas_recomendadas_final.iterrows()
+        ]
         reacao = obter_reacao_persona(nomes_musicas, persona_gerada)
     else:
         reacao = "🎧 Nenhuma música recomendada."

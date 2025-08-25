@@ -1,6 +1,29 @@
 import matplotlib.pyplot as plt
 import seaborn as sns
-import numpy as np
+import pandas as pd
+from sklearn.decomposition import PCA
+
+def print_playlist_bonita(playlist):
+    if playlist.empty:
+        print("🎧 Nenhuma música recomendada.")
+        return
+
+    cols = ['name', 'artists', 'popularity', 'artist_genres']
+    data = playlist[cols].copy()
+    data['artist_genres'] = data['artist_genres'].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
+
+    name_width = max(data['name'].str.len().max(), len("Nome")) + 2
+    artist_width = max(data['artists'].str.len().max(), len("Artista(s)")) + 2
+    pop_width = max(len(str(data['popularity'].max())), len("Popularidade")) + 2
+    genres_width = max(data['artist_genres'].str.len().max(), len("Gêneros")) + 2
+
+    header = f"{'Nome'.ljust(name_width)}{'Artista(s)'.ljust(artist_width)}{'Popularidade'.ljust(pop_width)}{'Gêneros'.ljust(genres_width)}"
+    print("\n🎧 Playlist Recomendada:\n")
+    print(header)
+    print("-" * len(header))
+
+    for idx, row in data.iterrows():
+        print(f"{row['name'].ljust(name_width)}{row['artists'].ljust(artist_width)}{str(row['popularity']).ljust(pop_width)}{row['artist_genres'].ljust(genres_width)}")
 
 def plotar_clusters(top_artists, musical_features):
     # Calcula a média das features por cluster
@@ -14,22 +37,34 @@ def plotar_clusters(top_artists, musical_features):
     plt.ylabel("Clusters")
     plt.show()
 
-    # --- Radar Chart para cada cluster ---
-    labels = np.array(musical_features)
-    num_vars = len(labels)
+    # --- Barplot (médias por cluster) ---
+    cluster_means.T.plot(kind="bar", figsize=(14, 6))
+    plt.title("Média das características por cluster")
+    plt.ylabel("Média normalizada")
+    plt.xlabel("Características musicais")
+    plt.legend(title="Cluster", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.tight_layout()
+    plt.show()
 
-    # Ângulos para o gráfico circular
-    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
-    angles += angles[:1]  # fecha o círculo
+    # --- Boxplot (distribuição das features por cluster) ---
+    df_melted = top_artists.melt(id_vars="cluster", value_vars=musical_features,
+                                 var_name="Feature", value_name="Valor")
+    plt.figure(figsize=(14, 6))
+    sns.boxplot(data=df_melted, x="Feature", y="Valor", hue="cluster")
+    plt.title("Distribuição das características por cluster")
+    plt.xticks(rotation=45)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left", title="Cluster")
+    plt.tight_layout()
+    plt.show()
 
-    plt.figure(figsize=(8, 8))
-    for cluster_id, row in cluster_means.iterrows():
-        values = row.tolist()
-        values += values[:1]
-        plt.polar(angles, values, label=f"Cluster {cluster_id}")
-        plt.fill(angles, values, alpha=0.1)
+    # --- PCA Scatter (redução para 2D) ---
+    pca = PCA(n_components=2)
+    X_pca = pca.fit_transform(top_artists[musical_features])
+    df_pca = pd.DataFrame(X_pca, columns=["PC1", "PC2"])
+    df_pca["cluster"] = top_artists["cluster"].values
 
-    plt.title("Perfis médios por cluster (Radar Chart)")
-    plt.xticks(angles[:-1], labels, fontsize=10)
-    plt.legend(loc="upper right", bbox_to_anchor=(1.2, 1.1))
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(data=df_pca, x="PC1", y="PC2", hue="cluster", palette="tab10")
+    plt.title("Clusters em 2D via PCA")
+    plt.tight_layout()
     plt.show()
