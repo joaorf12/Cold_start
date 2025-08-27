@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
-import ast
-import re
+import hdbscan
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -79,43 +78,39 @@ def gerar_recomendacao_completa(interacoes_usuarios_artistas, dados_artistas,
     top_artists = pd.merge(top_artists, caracteristicas_por_artistadata_by_artist, left_on='name_clean',
                            right_on='artists_clean', how='left')
 
-    # =========================
-    # Escolha do número de clusters visando DIVERSIDADE
-    # =========================
+    # Seleção das features
     X_features = ['age', 'gender', 'country'] + [f for f in musical_features if f in top_artists.columns]
 
+    # Preencher valores faltantes
     for feature in X_features:
         if feature not in ['age', 'gender', 'country']:
             top_artists[feature] = top_artists[feature].fillna(top_artists[feature].mean())
 
+    # Label Encoding para categóricas
+    label_cols = ['gender', 'country']
     encoders = {col: LabelEncoder().fit(top_artists[col]) for col in label_cols}
     for col in label_cols:
         top_artists[col] = encoders[col].transform(top_artists[col])
 
-    X = top_artists[X_features]
+    # Normalização
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_scaled = scaler.fit_transform(top_artists[X_features])
 
-    cluster_range = range(2, 50)
-    diversity_scores = []
+    # =========================
+    # HDBSCAN
+    # =========================
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=5,  # tamanho mínimo de cada cluster
+        min_samples=2,  # sensibilidade à densidade (opcional)
+        metric='euclidean',  # distância euclidiana
+        cluster_selection_method='eom'  # método padrão
+    )
+    top_artists['cluster'] = clusterer.fit_predict(X_scaled)
 
-    for n_clusters in cluster_range:
-        km = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-        labels = km.fit_predict(X_scaled)
-        sil_score = silhouette_score(X_scaled, labels)
-        centroids = km.cluster_centers_
-        pairwise_distances = np.linalg.norm(centroids[:, np.newaxis] - centroids, axis=2)
-        mean_distance = np.mean(pairwise_distances[np.triu_indices_from(pairwise_distances, k=1)])
-        diversity_score = 0.5 * sil_score + 0.5 * mean_distance
-        diversity_scores.append(diversity_score)
-
-    best_idx = np.argmax(diversity_scores)
-    n_clusters_final = cluster_range[best_idx]
-
-    kmeans = KMeans(n_clusters=n_clusters_final, random_state=42, n_init='auto')
-    top_artists['cluster'] = kmeans.fit_predict(X_scaled)
-
-    print(f"Número de clusters escolhido visando diversidade: {n_clusters_final}")
+    # clusters encontrados
+    num_clusters = len(set(top_artists['cluster'])) - (1 if -1 in top_artists['cluster'] else 0)
+    print(f"Número de clusters encontrados pelo HDBSCAN: {num_clusters}")
+    print(top_artists['cluster'].value_counts())
 
     # --- Usuário e persona ---
     novo_usuario = chamada_api_retry(gerar_novo_usuario_aleatorio)
@@ -132,6 +127,7 @@ def gerar_recomendacao_completa(interacoes_usuarios_artistas, dados_artistas,
             new_user_data[key] = encoders[key].transform([novo_usuario[key]])[0]
         else:
             new_user_data[key] = novo_usuario[key]
+
     for feat in musical_features:
         if feat in novo_usuario:
             val = novo_usuario[feat]
@@ -141,20 +137,20 @@ def gerar_recomendacao_completa(interacoes_usuarios_artistas, dados_artistas,
                 new_user_data[feat] = val
         else:
             new_user_data[feat] = top_artists[feat].mean()
+
     new_user_df = pd.DataFrame([new_user_data])[X_features]
     new_user_scaled = scaler.transform(new_user_df)
 
-    # --- Clusters mais próximos ---
-    distances = kmeans.transform(new_user_scaled)[0]
-    min_distance = distances.min()
-    threshold = min_distance * 1.2
-    nearest_cluster_indices = np.where(distances <= threshold)[0]
+    # Calcula a distância do novo usuário para o centro de cada cluster
+    clusters = top_artists[top_artists['cluster'] != -1].groupby('cluster')[X_features].mean()
+    distances = np.linalg.norm(clusters.values - new_user_scaled, axis=1)
 
-    print(f"\nO novo usuário está relacionado aos clusters: {nearest_cluster_indices}")
-    print(f"O usuário foi aderido a {len(nearest_cluster_indices)} clusters.")
+    # Seleciona clusters próximos
+    nearest_clusters = clusters.index[distances <= distances.min() * 1.2]
+    print(f"O novo usuário está relacionado aos clusters: {nearest_clusters}")
 
     # --- Filtragem de músicas pelos clusters ---
-    artistas_clusters = top_artists[top_artists['cluster'].isin(nearest_cluster_indices)]['name_clean'].unique()
+    artistas_clusters = top_artists[top_artists['cluster'].isin(nearest_clusters)]['name_clean'].unique()
     musicas_filtradas = data_with_genres[data_with_genres['artists_clean'].isin(artistas_clusters)].copy()
     if musicas_filtradas.empty:
         musicas_filtradas = data_with_genres.copy()
