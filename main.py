@@ -1,32 +1,76 @@
 import pandas as pd
 import numpy as np
-import hdbscan
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import euclidean_distances
-
+from sklearn.metrics import silhouette_score
 from preprocessamento import criar_df_generos_unificado
 from visualizacao import plotar_clusters, print_playlist_bonita
+from mapeamento_generos import mapear_generos_artista
 from chamadasGemini import (
     chamada_api_retry,
     gerar_novo_usuario_aleatorio,
     criar_persona_gemini,
     obter_reacao_persona,
 )
+import warnings
+
+# Ignorar FutureWarning para manter o output limpo
+warnings.filterwarnings('ignore', category=FutureWarning)
+
+# === Função para avaliar qualidade do clustering ===
+def silhouette_diversidade(X, labels, alpha=0.7):
+    # ignora clusters inválidos (se houver só 1 cluster)
+    if len(set(labels)) <= 1 or len(set(labels)) >= len(X):
+        return -1
+
+    # Ignora clusters de ruído
+    valid_labels = labels[labels != -1]
+    if len(valid_labels) < 2:
+        return -1
+
+    try:
+        sil = silhouette_score(X[labels != -1], valid_labels)
+    except:
+        sil = 0
+
+    # diversidade = proporção de clusters relevantes (>2% dos pontos)
+    unique, counts = np.unique(valid_labels, return_counts=True)
+    proporcoes = counts / counts.sum()
+    diversidade = np.sum(proporcoes > 0.02) / len(unique)
+
+    return alpha * sil + (1 - alpha) * diversidade
 
 
-def filtrar_playlist(df_musicas, persona, top_n=20):
+# === Ajusta clusters pequenos juntando com vizinho mais próximo ===
+def ajustar_clusters(df, X_features, min_size=5):
+    clusters = df['cluster'].unique()
+    if len(clusters) <= 1:
+        return df
+
+    centroids = df.groupby('cluster')[X_features].mean()
+    dist_matrix = euclidean_distances(centroids, centroids)
+
+    for c in clusters:
+        mask_c = df['cluster'] == c
+        if mask_c.sum() < min_size:
+            # Pega o cluster mais próximo, excluindo ele mesmo
+            vizinho_idx = np.argsort(dist_matrix[c])[1]
+            vizinho = clusters[vizinho_idx]
+            df.loc[mask_c, 'cluster'] = vizinho
+    return df
+
+
+def filtrar_playlist(df_musicas, generos_mapeamento, persona, top_n=20):
     """
     Filtra a playlist de acordo com a persona:
     - Prioriza gêneros que batem com a persona
     - Ajusta por energy e tempo
     - Mantém fallback caso não haja músicas suficientes nos clusters
     """
-
-    # ======================
-    # 1. Mapear gêneros da persona
-    # ======================
-    generos_persona = [g.lower() for g in persona['genres']]  # ex: ['indie electronica', 'indie rock', ...]
+    # ... (Resto da função, antes da definição do genero_score) ...
+    # Dicionário de gêneros negativos. Ajuste essa lista se necessário
+    generos_negativos = generos_mapeamento
 
     # Padronizar gêneros do dataset
     df_musicas['genres_lower'] = df_musicas['artist_genres'].apply(lambda gs: [g.lower() for g in gs])
@@ -35,8 +79,22 @@ def filtrar_playlist(df_musicas, persona, top_n=20):
     # 2. Score de correspondência de gênero
     # ======================
     def genero_score(musica_genres):
-        # número de gêneros da música que batem com a persona
-        return len(set(musica_genres) & set(generos_persona))
+        # Mapear os gêneros da música antes de comparar
+        generos_mapeados_musica = mapear_generos_artista(musica_genres)
+
+        # Aumente a pontuação de gênero para dar mais peso
+        score = len(set(generos_mapeados_musica) & set(persona['genres']))
+
+        # --- NOVA LÓGICA: PENALIDADE POR GÊNERO CONFLITANTE ---
+        if score > 0:
+            for genero_persona_principal in persona['genres']:
+                genero_persona_principal_lower = genero_persona_principal.lower()
+                if genero_persona_principal_lower in generos_negativos:
+                    for genero_negativo in generos_negativos[genero_persona_principal_lower]:
+                        if genero_negativo in generos_mapeados_musica:
+                            score -= 1  # Aplica penalidade
+                            break  # Pula para o próximo gênero
+        return score
 
     df_musicas['genero_score'] = df_musicas['genres_lower'].apply(genero_score)
 
@@ -50,27 +108,39 @@ def filtrar_playlist(df_musicas, persona, top_n=20):
     tempo_persona = tempo_map[persona['tempo']]
 
     # Normalizar entre 0 e 1
-    df_musicas['energy_score'] = 1 - abs(df_musicas['energy'] - energy_persona)
-    df_musicas['tempo_score'] = 1 - abs(df_musicas['tempo'] - tempo_persona) / max(tempo_map.values())
+    # Use a distância absoluta para um cálculo mais direto de proximidade
+    df_musicas['energy_score'] = 1 - abs(
+        df_musicas['energy'] - energy_persona) / 0.8  # Normalizado por um valor máximo de diferença
+    df_musicas['tempo_score'] = 1 - abs(
+        df_musicas['tempo'] - tempo_persona) / 140  # Normalizado por um valor máximo de diferença
 
     # ======================
-    # 4. Score final
+    # 4. Score final - AJUSTE AQUI
     # ======================
+    # Mantenha os pesos ajustados ou experimente outros
     df_musicas['final_score'] = (
             df_musicas['genero_score'] * 0.5 +
-            df_musicas['energy_score'] * 0.25 +
-            df_musicas['tempo_score'] * 0.25
+            df_musicas['energy_score'] * 0.3 +
+            df_musicas['tempo_score'] * 0.2
     )
+
+    # Filtra músicas com 'genero_score' > 0 para garantir que a música tenha pelo menos 1 gênero correspondente
+    # Este é um filtro essencial para remover lixo
+    df_musicas = df_musicas[df_musicas['genero_score'] > 0]
 
     # ======================
     # 5. Ordenar e pegar top N
     # ======================
     df_musicas_sorted = df_musicas.sort_values(by='final_score', ascending=False)
 
+    # Opcional: Remova duplicatas de artista para maior diversidade
+    df_musicas_sorted = df_musicas_sorted.drop_duplicates(subset=['artists'], keep='first')
+
     return df_musicas_sorted.head(top_n)
 
 # ==================== Função para gerar playlist personalizada ====================
-def gerar_playlist_personalizada(top_artists, clusters_relacionados, novo_usuario, X_features_playlist, qtd_por_cluster=2):
+def gerar_playlist_personalizada(top_artists, clusters_relacionados, novo_usuario, X_features_playlist,
+                                 qtd_por_cluster=2):
     """
     Gera playlist reordenada por proximidade do usuário a partir de 'top_artists'
     (um DataFrame com as colunas de features musicais e coluna 'cluster').
@@ -110,43 +180,41 @@ def gerar_playlist_personalizada(top_artists, clusters_relacionados, novo_usuari
 
     return playlist_final
 
+
+# ==================== Função para encontrar o K ideal para KMeans ====================
+def encontrar_melhor_k(X, k_range=(32, 50)):
+    melhor_k = 2
+    melhor_score = -1
+
+    for k in range(k_range[0], k_range[1] + 1):
+        kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto')
+        labels = kmeans.fit_predict(X)
+
+        # Silhouette Score para avaliar a qualidade
+        if len(set(labels)) > 1:
+            score = silhouette_score(X, labels)
+            if score > melhor_score:
+                melhor_score = score
+                melhor_k = k
+
+    print(f"Melhor K encontrado (baseado no Silhouette Score): {melhor_k}")
+    return melhor_k
+
+
 # ==================== Função principal ====================
 def gerar_recomendacao_completa(
-    interacoes_usuarios_artistas,
-    dados_artistas,
-    caracteristicas_por_artistadata_by_artist,
-    musicas_base,
-    musicas_com_generos,
-    musical_features,
-    label_cols,
-    preference_map,
-    num_recommendations_needed=10,
-    num_clusters_desejado=10,       # <-- você controla quantos clusters quer forçar
-    top_k_clusters=6,               # <-- quantos clusters mais próximos do usuário usar
+        interacoes_usuarios_artistas,
+        dados_artistas,
+        caracteristicas_por_artistadata_by_artist,
+        musicas_base,
+        musicas_com_generos,
+        musical_features,
+        label_cols,
+        preference_map,
+        generos_mapeamento,
+        num_recommendations_needed=10,
+        top_k_clusters=6,
 ):
-    # Dicionário para mapear gêneros descritivos para gêneros do dataset
-    generos_mapeamento = {
-        'rock': ['rock', 'classic rock', 'hard rock', 'rock and roll', 'alternative rock'],
-        'pop': ['pop', 'indie pop', 'pop rock', 'synth-pop', 'electropop'],
-        'electronic': ['edm', 'dance pop', 'electronic', 'house', 'dubstep', 'techno', 'trance', 'electronica'],
-        'hip hop': ['hip hop', 'rap', 'trap', 'drill'],
-        'r&b': ['r&b', 'soul'],
-        'jazz': ['jazz', 'smooth jazz', 'swing'],
-        'folk': ['folk', 'singer-songwriter'],
-        'metal': ['metal', 'heavy metal', 'death metal', 'black metal', 'thrash metal'],
-        'classical': ['classical', 'symphony', 'orchestral'],
-        'blues': ['blues', 'delta blues', 'electric blues'],
-        'indie': ['indie pop', 'indie rock', 'indie folk'],
-        'country': ['country', 'alt-country'],
-        'dance': ['dance pop', 'edm', 'house'],
-        'disco': ['disco', 'funk'],
-        'reggae': ['reggae', 'dub'],
-        'latin': ['latin', 'reggaeton', 'salsa', 'bachata'],
-        'k-pop': ['k-pop'],
-        'j-pop': ['j-pop'],
-        'synthpop': ['synthpop', 'synth-pop', 'electropop', 'electro pop'],
-        'alternative': ['alternative', 'alt rock', 'alt pop'],
-    }
 
     def obter_generos_mapeados(generos_persona):
         generos_traduzidos = set()
@@ -156,6 +224,9 @@ def gerar_recomendacao_completa(
                 if chave in genero_lower:
                     generos_traduzidos.update(valores)
         return list(generos_traduzidos)
+
+    def padronizar_genero(g):
+        return g.lower().replace("-", " ").strip()
 
     # --- Limpeza e padronização de nomes ---
     dfs_cols = [
@@ -182,88 +253,48 @@ def gerar_recomendacao_completa(
         lambda x: x if isinstance(x, list) else (x.split(',') if isinstance(x, str) and x else [])
     )
 
-    # --- Simulação de perfil demográfico para usuários (para features categóricas) ---
-    np.random.seed(42)
-    unique_users = interacoes_usuarios_artistas['userID'].unique()
-    fake_users = pd.DataFrame({
-        'userID': unique_users,
-        'age': np.random.randint(15, 60, len(unique_users)),
-        'gender': np.random.choice(['m', 'f'], len(unique_users)),
-        'country': np.random.choice(['Brazil', 'USA', 'Germany', 'UK', 'Japan'], len(unique_users)),
-    })
-    merged = pd.merge(interacoes_usuarios_artistas, fake_users, on='userID')
+    # --- NOVA LÓGICA: CRIA PERFIS DE USUÁRIO MÉDIOS PARA CLUSTERING ---
+    merged_with_features = pd.merge(interacoes_usuarios_artistas, dados_artistas,
+                                    left_on='artistID', right_on='id', how='left')
+    merged_with_features = pd.merge(merged_with_features,
+                                    caracteristicas_por_artistadata_by_artist,
+                                    left_on='name_clean', right_on='artists_clean', how='left')
 
-    # Para cada user, pega o artista mais forte (maior weight)
-    top_artists = merged.loc[merged.groupby('userID')['weight'].idxmax()].copy()
-    top_artists = pd.merge(
-        top_artists,
-        dados_artistas[['id', 'name', 'name_clean']],
-        left_on='artistID',
-        right_on='id',
-        how='left'
-    )
-    top_artists = pd.merge(
-        top_artists,
-        caracteristicas_por_artistadata_by_artist,
-        left_on='name_clean',
-        right_on='artists_clean',
-        how='left'
-    )
+    # Garante que temos as características musicais e apenas usuários com dados
+    merged_with_features.dropna(subset=musical_features, inplace=True)
 
-    # Seleção das features:
-    # - Para o MODELO (clustering): demográficas + musicais
-    # - Para a PLAYLIST: apenas as musicais (compatível com mapas qualitativos)
-    X_features_modelo = ['age', 'gender', 'country'] + [f for f in musical_features if f in top_artists.columns]
-    X_features_playlist = [f for f in musical_features if f in top_artists.columns]
+    # Média ponderada por 'weight' para criar perfis de usuário mais precisos
+    user_profiles = pd.DataFrame()
+    for feature in musical_features:
+        user_profiles[feature] = merged_with_features.groupby('userID').apply(
+            lambda x: np.average(x[feature], weights=x['weight'])
+        )
 
-    # Preencher valores faltantes nas features do modelo
-    for feature in X_features_modelo:
-        if feature not in ['age', 'gender', 'country']:
-            top_artists[feature] = top_artists[feature].fillna(top_artists[feature].mean())
+    user_profiles = user_profiles.reset_index()
 
-    # Label Encoding para categóricas (gender, country)
-    encoders = {}
-    for col in label_cols:
-        enc = LabelEncoder()
-        top_artists[col] = enc.fit_transform(top_artists[col].astype(str))
-        encoders[col] = enc
+    # Preencher NaNs remanescentes com a média geral das features
+    user_profiles[musical_features] = user_profiles[musical_features].fillna(user_profiles[musical_features].mean())
 
-    # Normalização das features do modelo
+    # O clustering agora será em 'user_profiles'
+    X_features_modelo = musical_features  # Remove as features demográficas
     scaler_modelo = StandardScaler()
-    X_scaled_modelo = scaler_modelo.fit_transform(top_artists[X_features_modelo])
+    X_scaled_modelo = scaler_modelo.fit_transform(user_profiles[X_features_modelo])
 
     # =========================
-    # HDBSCAN + KMeans fallback (para forçar mais clusters)
+    # KMeans como única opção
     # =========================
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=3,
-        min_samples=1,
-        metric='euclidean',
-        cluster_selection_method='leaf'
-    )
-    top_artists['cluster_hdbscan'] = clusterer.fit_predict(X_scaled_modelo)
+    k_ideal = encontrar_melhor_k(X_scaled_modelo)
+    kmeans = KMeans(n_clusters=k_ideal, random_state=42, n_init='auto')
+    labels = kmeans.fit_predict(X_scaled_modelo)
+    print(f"KMeans executado. Encontrou {len(np.unique(labels))} clusters.")
 
-    # Separa dados válidos e ruído
-    dados_sem_ruido = top_artists[top_artists['cluster_hdbscan'] != -1].copy()
-    dados_ruido     = top_artists[top_artists['cluster_hdbscan'] == -1].copy()
+    user_profiles['cluster'] = labels
 
-    # Se não houver dados sem ruído, usa todo mundo no KMeans
-    if dados_sem_ruido.empty:
-        dados_sem_ruido = top_artists.copy()
-        dados_ruido = pd.DataFrame(columns=top_artists.columns)
+    # Ajusta clusters pequenos (para KMeans)
+    user_profiles = ajustar_clusters(user_profiles, X_features_modelo, min_size=5)
 
-    # Força K clusters nos dados sem ruído
-    kmeans = KMeans(n_clusters=num_clusters_desejado, random_state=42, n_init=10)
-    dados_sem_ruido['cluster'] = kmeans.fit_predict(dados_sem_ruido[X_features_modelo])
-
-    # Atribui o ruído ao cluster mais próximo
-    if not dados_ruido.empty:
-        dados_ruido['cluster'] = kmeans.predict(dados_ruido[X_features_modelo])
-
-    # Junta tudo de volta
-    top_artists = pd.concat([dados_sem_ruido, dados_ruido], ignore_index=True)
-    print("Clusters finais (com fallback):")
-    print(top_artists['cluster'].value_counts())
+    print("Clusters finais:")
+    print(user_profiles['cluster'].value_counts())
 
     # --- Usuário e persona (única vez, coerente com preference_map) ---
     novo_usuario = chamada_api_retry(gerar_novo_usuario_aleatorio)
@@ -271,138 +302,113 @@ def gerar_recomendacao_completa(
     persona_gerada = persona_info['persona_text']
     persona_generos = persona_info['persona_genres']
 
-    # Mapear gêneros textuais da persona para gêneros do dataset
-    generos_para_filtro = obter_generos_mapeados(persona_generos)
+    # Item 2 - Mapear gêneros da persona para os gêneros genéricos do seu dicionário
+    generos_para_filtro = mapear_generos_artista(persona_generos)
+    persona_generos_mapeados = [padronizar_genero(g) for g in generos_para_filtro]
 
-    def padronizar_genero(g):
-        return g.lower().replace("-", " ").strip()
+    print("Generos mapeados:", persona_generos_mapeados)
 
-    persona_generos = [padronizar_genero(g) for g in persona_generos]
-    generos_para_filtro = [padronizar_genero(g) for g in generos_para_filtro]
-
-    print("Generos da persona:", persona_generos)
-    print("Generos mapeados:", generos_para_filtro)
-
-    # Vetor numérico do novo usuário para as features musicais (para distância na playlist)
-    # e também criar um vetor para distância até centróides de clusters (usa X_features_modelo):
+    # --- Encontrar o cluster do novo usuário ---
     new_user_data_modelo = {}
-    # demográficas
-    for key in ['age', 'gender', 'country']:
-        if key in label_cols:
-            new_user_data_modelo[key] = encoders[key].transform([novo_usuario.get(key, 'm' if key=='gender' else 'USA')])[0] \
-                if novo_usuario.get(key) in encoders[key].classes_ else 0
-        else:
-            # se não vier do gerador, usa média
-            new_user_data_modelo[key] = top_artists[key].mean()
-
-    # musicais (usa preference_map)
     for feat in musical_features:
         val = novo_usuario.get(feat, None)
         if isinstance(val, str):
             new_user_data_modelo[feat] = preference_map[feat][val.lower()]
-        elif isinstance(val, (int, float)):
-            new_user_data_modelo[feat] = val
         else:
-            new_user_data_modelo[feat] = top_artists[feat].mean()
+            new_user_data_modelo[feat] = user_profiles[feat].mean()
 
     new_user_df_modelo = pd.DataFrame([new_user_data_modelo])[X_features_modelo]
-    new_user_scaled = scaler_modelo.transform(new_user_df_modelo)
+    scaler_user = StandardScaler().fit(user_profiles[X_features_modelo])
+    new_user_scaled = scaler_user.transform(new_user_df_modelo)
 
-    # Distância do novo usuário aos centróides de KMeans
-    clusters_centroids = top_artists.groupby('cluster')[X_features_modelo].mean().values
+    # Distância do novo usuário aos centróides
+    clusters_centroids = user_profiles.groupby('cluster')[X_features_modelo].mean().values
+
+    # Mapeia os índices de volta para os rótulos de cluster
+    cluster_labels = user_profiles['cluster'].unique()
+    cluster_labels.sort()
+
     dists = np.linalg.norm(clusters_centroids - new_user_scaled, axis=1).flatten()
-
-    # Seleciona os K clusters mais próximos
-    all_cluster_labels = sorted(top_artists['cluster'].unique())
     ordem = np.argsort(dists)
-    clusters_relacionados = [all_cluster_labels[i] for i in ordem[:min(top_k_clusters, len(all_cluster_labels))]]
+    clusters_relacionados = [cluster_labels[i] for i in ordem[:min(top_k_clusters, len(cluster_labels))]]
     print(f"O novo usuário está relacionado aos clusters (top-{len(clusters_relacionados)}): {clusters_relacionados}")
 
-    # === Playlist personalizada por proximidade (em cima de top_artists) ===
-    playlist_seed = gerar_playlist_personalizada(
-        top_artists=top_artists,
-        clusters_relacionados=clusters_relacionados,
-        novo_usuario=novo_usuario,
-        X_features_playlist=X_features_playlist,
-        qtd_por_cluster=max(1, num_recommendations_needed // max(1, len(clusters_relacionados)))
-    )
+    # === LÓGICA DE RECOMENDAÇÃO MELHORADA ===
 
-    # Usa artistas da seed para filtrar faixas reais
-    artistas_clusters = playlist_seed['name_clean'].unique() if not playlist_seed.empty else \
-                        top_artists[top_artists['cluster'].isin(clusters_relacionados)]['name_clean'].unique()
+    # 1. Pega os perfis médios dos clusters relacionados
+    perfis_clusters_relacionados = user_profiles[user_profiles['cluster'].isin(clusters_relacionados)].copy()
 
-    musicas_filtradas = data_with_genres[data_with_genres['artists_clean'].isin(artistas_clusters)].copy()
-    if musicas_filtradas.empty:
-        musicas_filtradas = data_with_genres.copy()
+    if not perfis_clusters_relacionados.empty:
+        # 2. Calcula a distância de cada perfil de usuário dentro do cluster até o novo usuário
+        distancias_ao_novo_usuario = np.linalg.norm(
+            perfis_clusters_relacionados[musical_features].values - new_user_scaled, axis=1)
 
-    # --- Filtro de popularidade ---
-    if 'popularity' in musicas_filtradas.columns and not musicas_filtradas['popularity'].isna().all():
-        pop_threshold = musicas_filtradas['popularity'].quantile(0.5)
-        mf = musicas_filtradas[musicas_filtradas['popularity'] >= pop_threshold]
-        if not mf.empty:
-            musicas_filtradas = mf
+        # 3. Inverte a distância para criar um peso (quanto menor a distância, maior o peso)
+        pesos = 1 / (distancias_ao_novo_usuario + 1e-6)
 
-    # --- Filtro por gêneros preferidos (fallback) ---
-    if generos_para_filtro:
-        musicas_por_genero = musicas_filtradas[musicas_filtradas['artist_genres'].apply(
-            lambda gs: any(g in gs for g in generos_para_filtro)
-        )]
-        if len(musicas_por_genero) >= num_recommendations_needed // 2:
-            musicas_filtradas = musicas_por_genero
-        else:
-            print("INFO: Pouca aderência por gênero nos clusters; buscando no dataset completo…")
-            fallback_musicas = data_with_genres[data_with_genres['artist_genres'].apply(
-                lambda gs: any(g in gs for g in generos_para_filtro)
-            )].copy()
-            if not fallback_musicas.empty and 'popularity' in fallback_musicas.columns:
-                pop_thr_fb = fallback_musicas['popularity'].quantile(0.5)
-                fb2 = fallback_musicas[fallback_musicas['popularity'] >= pop_thr_fb]
-                if not fb2.empty:
-                    fallback_musicas = fb2
-            if not fallback_musicas.empty:
-                musicas_filtradas = fallback_musicas
+        # 4. Calcula a média ponderada para criar um perfil de ranqueamento
+        perfil_medio_grupos = np.average(perfis_clusters_relacionados[musical_features].values, axis=0, weights=pesos)
+        perfil_medio_grupos = {feat: perfil_medio_grupos[i] for i, feat in enumerate(musical_features)}
+    else:
+        # Fallback caso os clusters estejam vazios
+        perfil_medio_grupos = {feat: user_profiles[feat].mean() for feat in musical_features}
 
-    # --- Ordenar por proximidade ao perfil musical e pontuar gênero ---
-    user_vector_musical = np.array([new_user_data_modelo[feat] for feat in musical_features])
-    musicas_filtradas = musicas_filtradas.copy()
-    # garante colunas
+    # --- Ponto de alteração: filtrar músicas APENAS dos clusters relacionados ---
+
+    # Obtém as IDs de usuário dos clusters relacionados
+    user_ids_clusters = user_profiles[user_profiles['cluster'].isin(clusters_relacionados)]['userID'].tolist()
+
+    # Filtra as interações e depois as músicas
+    interacoes_filtradas = interacoes_usuarios_artistas[interacoes_usuarios_artistas['userID'].isin(user_ids_clusters)]
+    # Usar .unique() para pegar apenas os artistIDs distintos
+    artist_ids_clusters = interacoes_filtradas['artistID'].unique()
+
+    # Filtra os DataFrames de artistas e músicas
+    artists_from_clusters = dados_artistas[dados_artistas['id'].isin(artist_ids_clusters)]
+
+    # Garante que as músicas de 'data_with_genres' correspondem aos artistas
+    musicas_filtradas = data_with_genres[
+        data_with_genres['artists_clean'].isin(artists_from_clusters['name_clean'])].copy()
+
+    # 3. Ranqueia as músicas FILTRADAS
+    musicas_para_ordenar = musicas_filtradas
+
+    # Ponto de entrada: o vetor de perfil médio dos clusters
+    perfil_clusters_vector = np.array([perfil_medio_grupos[feat] for feat in musical_features])
+
+    # Garante que as colunas musicais existem no dataframe
     for feat in musical_features:
-        if feat not in musicas_filtradas.columns:
-            musicas_filtradas[feat] = top_artists[feat].mean()
+        if feat not in musicas_para_ordenar.columns or musicas_para_ordenar[feat].isnull().all():
+            musicas_para_ordenar[feat] = user_profiles[feat].mean()
 
-    musicas_filtradas['distancia_perfil'] = np.linalg.norm(
-        musicas_filtradas[musical_features].values - user_vector_musical, axis=1
-    )
-    musicas_filtradas['pontuacao_genero'] = 0.0
-    if generos_para_filtro:
-        musicas_filtradas['pontuacao_genero'] = musicas_filtradas['artist_genres'].apply(
-            lambda gs: 1.0 if any(g in gs for g in generos_para_filtro) else -0.5
-        )
-
-    musicas_filtradas['distancia_ponderada'] = musicas_filtradas['distancia_perfil'] - musicas_filtradas['pontuacao_genero']
-
-    # Colunas finais
-    cols_necessarias = ['id', 'name', 'artists', 'popularity', 'artist_genres'] + musical_features
-    musicas_filtradas = musicas_filtradas.sort_values(
-        by=['distancia_ponderada', 'popularity'] if 'popularity' in musicas_filtradas.columns else ['distancia_ponderada'],
-        ascending=[True, False] if 'popularity' in musicas_filtradas.columns else [True]
+    musicas_para_ordenar['distancia_perfil_cluster'] = np.linalg.norm(
+        musicas_para_ordenar[musical_features].values - perfil_clusters_vector, axis=1
     )
 
-    # Remove duplicadas por nome (ou por id, se preferir)
-    if 'name' in musicas_filtradas.columns:
-        musicas_filtradas = musicas_filtradas.drop_duplicates(subset=['name'], keep='first')
-
+    # 4. Aplica a lógica da persona para refinar a seleção
     persona_para_filtro = {
-        'genres': persona_generos,
-        'energy': novo_usuario['energy'],  # também precisa de energy
-        'tempo': novo_usuario['tempo']  # e tempo
+        'genres': persona_generos_mapeados,
+        'energy': novo_usuario['energy'],
+        'tempo': novo_usuario['tempo']
     }
 
-    playlist_filtrada = filtrar_playlist(musicas_filtradas, persona_para_filtro, top_n=15)
-    print(playlist_filtrada[['name', 'artists', 'genero_score', 'energy_score', 'tempo_score', 'final_score']])
+    # Usa a função `filtrar_playlist` para ranquear as músicas
+    playlist_final = filtrar_playlist(musicas_para_ordenar, generos_mapeamento, persona_para_filtro,
+                                      top_n=num_recommendations_needed)
 
-    # --- Depois de calcular playlist_filtrada ---
-    playlist_final = playlist_filtrada.copy()
+    # Se a playlist final estiver vazia após a filtragem, use a base inteira como fallback
+    if playlist_final.empty:
+        print(
+            "INFO: Não foi possível gerar uma playlist com os clusters. Usando a base de dados completa como fallback.")
+        playlist_final = filtrar_playlist(data_with_genres.copy(), generos_mapeamento, persona_para_filtro,
+                                          top_n=num_recommendations_needed)
+
+    print(playlist_final[['name', 'artists', 'genero_score', 'energy_score', 'tempo_score', 'final_score']])
+
+    # --- Depois de calcular playlist_final ---
+    if 'name' not in playlist_final.columns:
+        playlist_final = pd.DataFrame(
+            columns=['id', 'name', 'artists', 'popularity', 'artist_genres'] + musical_features)
 
     # --- Limita repetição de artista (máx 3 vezes) ---
     contador_artistas = {}
@@ -420,8 +426,9 @@ def gerar_recomendacao_completa(
     # --- Fallback caso a playlist seja menor que o necessário ---
     if len(playlist_final) < num_recommendations_needed:
         faltantes = num_recommendations_needed - len(playlist_final)
-        amostras_extra = data_with_genres.sample(faltantes, random_state=42)
+        amostras_extra = data_with_genres.sample(n=min(faltantes, len(data_with_genres)), random_state=42)
         playlist_final = pd.concat([playlist_final, amostras_extra], ignore_index=True)
+        print("INFO: Gerando músicas adicionais para completar a playlist.")
 
     # --- Garantir as colunas finais ---
     cols_necessarias = ['id', 'name', 'artists', 'popularity', 'artist_genres'] + musical_features
@@ -459,6 +466,30 @@ preference_map = {
     'tempo': {'alto': 190.0, 'medio': 110.0, 'baixo': 50.0},
 }
 
+# Dicionário para mapear gêneros descritivos para gêneros do dataset
+generos_mapeamento = {
+    'rock': ['rock', 'classic rock', 'hard rock', 'rock and roll', 'alternative rock'],
+    'pop': ['pop', 'indie pop', 'pop rock', 'synth-pop', 'electropop'],
+    'electronic': ['edm', 'dance pop', 'electronic', 'house', 'dubstep', 'techno', 'trance', 'electronica'],
+    'hip hop': ['hip hop', 'rap', 'trap', 'drill'],
+    'r&b': ['r&b', 'soul'],
+    'jazz': ['jazz', 'smooth jazz', 'swing'],
+    'folk': ['folk', 'singer-songwriter'],
+    'metal': ['metal', 'heavy metal', 'death metal', 'black metal', 'thrash metal'],
+    'classical': ['classical', 'symphony', 'orchestral'],
+    'blues': ['blues', 'delta blues', 'electric blues'],
+    'indie': ['indie pop', 'indie rock', 'indie folk'],
+    'country': ['country', 'alt-country'],
+    'dance': ['dance pop', 'edm', 'house'],
+    'disco': ['disco', 'funk'],
+    'reggae': ['reggae', 'dub'],
+    'latin': ['latin', 'reggaeton', 'salsa', 'bachata'],
+    'k-pop': ['k-pop'],
+    'j-pop': ['j-pop'],
+    'synthpop': ['synthpop', 'synth-pop', 'electropop', 'electro pop'],
+    'alternative': ['alternative', 'alt rock', 'alt pop'],
+}
+
 label_cols = ['gender', 'country']
 
 # DataFrame unificado de gêneros (do seu módulo de preprocessamento)
@@ -474,9 +505,9 @@ if df_generos is not None:
         musical_features=musical_features,
         label_cols=label_cols,
         preference_map=preference_map,
+        generos_mapeamento=generos_mapeamento,
         num_recommendations_needed=8,
-        num_clusters_desejado=10,     # << ajuste aqui para "usar mais clusters"
-        top_k_clusters=6,             # << quantos clusters mais próximos considerar
+        top_k_clusters=6,
     )
 
     print("Novo usuário:", novo_usuario)

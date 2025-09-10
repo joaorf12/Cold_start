@@ -58,6 +58,9 @@ def criar_df_generos_unificado():
         # Padronizar nomes de artistas
         df_generos_unificado['artists_clean'] = df_generos_unificado['artists'].str.lower().str.replace(r'[^\w\s]', '',
                                                                                                         regex=True).str.strip()
+        # if True:
+        #     df_generos_unificado.to_csv('df_generos_unificado.csv', index=False)
+        #     print("DataFrame de gêneros unificado salvo em 'df_generos_unificado.csv'.")
 
         return df_generos_unificado
 
