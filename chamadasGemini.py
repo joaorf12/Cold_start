@@ -39,28 +39,52 @@ def extrair_dict_resposta(texto):
     return match.group(0)
 
 def gerar_novo_usuario_aleatorio():
-    prompt = """
-        Gere um novo usuário aleatório com características similares a este exemplo:
-        
-        novo_usuario = {
-        'age': 16,
-        'gender': 'f',
-        'country': 'Brazil',
-        'danceability': 'baixo',
-        'energy': 'baixo',
-        'loudness': 'baixo',
-        'valence': 'baixo',
-        'tempo': 'baixo',
-        'acousticness': 'baixo',
-        'instrumentalness': 'baixo',
-        'liveness': 'baixo',
-        'speechiness': 'baixo'
-        }
-        
-        Valores variados, seguindo padrão 'baixo', 'medio', 'alto' para as características musicais,
-        idade entre 13 e 50 anos, gênero 'm' ou 'f', country em ['Brazil','USA','Germany','UK','Japan'].
-        Retorne SOMENTE o dicionário em formato Python, sem explicações.
-        """
+    prompt_test = True
+
+    if prompt_test:
+        prompt = """
+                Gere um novo usuário com características:
+
+                novo_usuario = {
+                'age': 23,
+                'gender': 'm',
+                'country': 'Brazil',
+                'danceability': 'alto',
+                'energy': 'alto',
+                'loudness': 'alto',
+                'valence': 'medio',
+                'tempo': 'medio',
+                'acousticness': 'medio',
+                'instrumentalness': 'alto',
+                'liveness': 'medio',
+                'speechiness': 'medio'
+                }
+
+                Retorne SOMENTE o dicionário em formato Python, sem explicações.
+                """
+    else:
+        prompt = """
+            Gere um novo usuário aleatório com características similares a este exemplo:
+            
+            novo_usuario = {
+            'age': 16,
+            'gender': 'f',
+            'country': 'Brazil',
+            'danceability': 'baixo',
+            'energy': 'baixo',
+            'loudness': 'baixo',
+            'valence': 'baixo',
+            'tempo': 'baixo',
+            'acousticness': 'baixo',
+            'instrumentalness': 'baixo',
+            'liveness': 'baixo',
+            'speechiness': 'baixo'
+            }
+            
+            Valores variados, seguindo padrão 'baixo', 'medio', 'alto' para as características musicais,
+            idade entre 13 e 50 anos, gênero 'm' ou 'f', country em ['Brazil','USA','Germany','UK','Japan'].
+            Retorne SOMENTE o dicionário em formato Python, sem explicações.
+            """
     # Usando o método generate_content do Gemini
     response = model_gemini.generate_content(prompt)
 
