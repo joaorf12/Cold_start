@@ -3,10 +3,9 @@ import numpy as np
 import difflib
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
-from sklearn.metrics.pairwise import euclidean_distances
 from sklearn.metrics import silhouette_score
 from sklearn.decomposition import PCA
-from visualizacao import print_playlist_bonita
+from visualizacao import print_playlist_bonita, plot_caracteristicas_dominantes
 from mapeamento_generos import mapear_generos_artista
 from chamadasGemini import (
     chamada_api_retry,
@@ -20,29 +19,6 @@ from preprocessamento import unificar_e_salvar_generos
 
 # Ignorar FutureWarning para manter o output limpo
 warnings.filterwarnings('ignore', category=FutureWarning)
-
-# === Função para avaliar qualidade do clustering ===
-def silhouette_diversidade(X, labels, alpha=0.7):
-    # ignora clusters inválidos (se houver só 1 cluster)
-    if len(set(labels)) <= 1 or len(set(labels)) >= len(X):
-        return -1
-
-    # Ignora clusters de ruído
-    valid_labels = labels[labels != -1]
-    if len(valid_labels) < 2:
-        return -1
-
-    try:
-        sil = silhouette_score(X[labels != -1], valid_labels)
-    except:
-        sil = 0
-
-    # diversidade = proporção de clusters relevantes (>2% dos pontos)
-    unique, counts = np.unique(valid_labels, return_counts=True)
-    proporcoes = counts / counts.sum()
-    diversidade = np.sum(proporcoes > 0.02) / len(unique)
-
-    return alpha * sil + (1 - alpha) * diversidade
 
 # === Ajusta clusters pequenos juntando com vizinho mais próximo ===
 def ajustar_clusters(df, min_size=10):
@@ -158,21 +134,21 @@ def filtrar_playlist(df_musicas, generos_mapeamento, persona, pesos, top_n=20, g
     # 3. Score de energia/tempo e INSTRUMENTAL
     # ======================
     energia_map = {'baixo': 0.2, 'medio': 0.5, 'alto': 0.8}
-    tempo_map = {'baixo': 60, 'medio': 100, 'alto': 140}
+    #tempo_map = {'baixo': 60, 'medio': 100, 'alto': 140}
     instrumental_map = {'baixo': 0.05, 'medio': 0.4, 'alto': 0.95}
     speechiness_map = {'baixo': 0.05, 'medio': 0.25, 'alto': 0.9}
     liveness_map = {'baixo': 0.01, 'medio': 0.4, 'alto': 0.95}
 
     energy_persona = energia_map.get(persona.get('energy'), 0.5)
-    tempo_persona = tempo_map.get(persona.get('tempo'), 110)
+    #tempo_persona = tempo_map.get(persona.get('tempo'), 110)
     instrumental_persona = instrumental_map.get(persona.get('instrumentalness'), 0.4)
     speechiness_persona = speechiness_map.get(persona.get('speechiness'), 0.25)
     liveness_persona = liveness_map.get(persona.get('liveness'), 0.5)
 
     df['energy_score'] = 1 - abs(
         df['energy'] - energy_persona) / 0.8
-    df['tempo_score'] = 1 - abs(
-        df['tempo'] - tempo_persona) / 140
+    #df['tempo_score'] = 1 - abs(
+        #df['tempo'] - tempo_persona) / 140
     df['instrumentalness_score'] = 1 - abs(
         df['instrumentalness'] - instrumental_persona) / 0.95
     df['speechiness_score'] = 1 - abs(
@@ -186,7 +162,7 @@ def filtrar_playlist(df_musicas, generos_mapeamento, persona, pesos, top_n=20, g
     df['final_score'] = (
             df['genero_score_norm'] * pesos['genero'] +
             df['energy_score'] * pesos['energy'] +
-            df['tempo_score'] * pesos['tempo'] +
+            #df['tempo_score'] * pesos['tempo'] +
             df['popularity_score'] * pesos['popularity'] +
             df['instrumentalness_score'] * pesos['instrumentalness'] +
             df['speechiness_score'] * pesos['speechiness'] +
@@ -358,6 +334,20 @@ def gerar_recomendacao_completa(
     labels = kmeans.fit_predict(X_pca)
     print(f"KMeans executado. Encontrou {len(np.unique(labels))} clusters.")
 
+    # === CHAMADA PARA PLOTAGEM DAS CARACTERÍSTICAS DOMINANTES (ADICIONADO) ===
+    # A função usar_profiles_encoded precisa ter a coluna 'cluster'
+    user_profiles_encoded['cluster'] = labels
+
+    plot_caracteristicas_dominantes(
+        user_profiles_encoded.copy(),  # Passa o DataFrame com o cluster ID
+        musical_features,
+        X_scaled_modelo,
+        k_ideal
+    )
+    # =========================================================================
+
+    #return 0
+
     user_profiles_encoded['cluster'] = labels
     user_profiles_encoded = ajustar_clusters(user_profiles_encoded, min_size=10)
 
@@ -383,7 +373,8 @@ def gerar_recomendacao_completa(
     if is_fallback:
         novo_usuario = {
             'age': 30, 'gender': 'f', 'country': 'Brazil',
-            'energy': 'alto', 'tempo': 'medio', 'acousticness': 'medio',
+            #'energy': 'alto', 'tempo': 'medio', 'acousticness': 'medio',
+            'energy': 'alto', 'acousticness': 'medio',
             'instrumentalness': 'baixo', 'speechiness': 'baixo', 'liveness': 'baixo'
         }
         persona_gerada = "Sou uma pessoa vibrante que gosta de música animada, com um bom ritmo, perfeita para dançar. Prefiro músicas com vocais e que não sejam muito acústicas."
@@ -411,12 +402,14 @@ def gerar_recomendacao_completa(
         pesos_dinamicos = pesos_atuais
     else:
         pesos_base = {
-            'genero': 0.25, 'energy': 0.15, 'tempo': 0.15,
+            #'genero': 0.25, 'energy': 0.15, 'tempo': 0.15,
+            'genero': 0.25, 'energy': 0.15,
             'popularity': 0.10, 'instrumentalness': 0.15,
             'speechiness': 0.10, 'liveness': 0.10,
         }
         # Na seção 'Ajusta pesos com base nas preferências da persona'
-        for feature in ['energy', 'tempo', 'danceability', 'valence', 'acousticness', 'instrumentalness', 'liveness',
+        #for feature in ['energy', 'tempo', 'danceability', 'valence', 'acousticness', 'instrumentalness', 'liveness',
+        for feature in['energy', 'danceability', 'valence', 'acousticness', 'instrumentalness', 'liveness',
                         'speechiness']:
             pref = novo_usuario.get(feature, 'medio')
             if pref == 'alto':
@@ -508,7 +501,7 @@ def gerar_recomendacao_completa(
         'generos': persona_generos_mapeados,
         'subgeneros': persona_subgeneros,
         'energy': novo_usuario['energy'],
-        'tempo': novo_usuario['tempo'],
+        #'tempo': novo_usuario['tempo'],
         'instrumentalness': novo_usuario['instrumentalness'],
         'speechiness': novo_usuario['speechiness'],
         'liveness': novo_usuario['liveness']
@@ -625,20 +618,22 @@ def gerar_recomendacao_completa(
 
 # --- Uso da função ---
 musical_features = [
-    'danceability', 'energy', 'loudness', 'speechiness',
-    'acousticness', 'instrumentalness', 'liveness', 'valence', 'tempo'
+    # 'danceability', 'energy', 'loudness', 'speechiness',
+    # 'acousticness', 'instrumentalness', 'liveness', 'valence', 'tempo'
+    'danceability', 'energy', 'speechiness',
+    'acousticness', 'instrumentalness', 'liveness', 'valence',
 ]
 
 preference_map = {
     'danceability': {'alto': 0.95, 'medio': 0.5, 'baixo': 0.05},
     'energy': {'alto': 0.95, 'medio': 0.5, 'baixo': 0.05},
-    'loudness': {'alto': -2.0, 'medio': -15.0, 'baixo': -45.0},
+    #'loudness': {'alto': -2.0, 'medio': -15.0, 'baixo': -45.0},
     'valence': {'alto': 0.95, 'medio': 0.5, 'baixo': 0.05},
     'acousticness': {'alto': 0.05, 'medio': 0.4, 'baixo': 0.95},
     'instrumentalness': {'alto': 0.95, 'medio': 0.4, 'baixo': 0.0},
     'liveness': {'alto': 0.95, 'medio': 0.4, 'baixo': 0.01},
     'speechiness': {'alto': 0.9, 'medio': 0.25, 'baixo': 0.01},
-    'tempo': {'alto': 190.0, 'medio': 110.0, 'baixo': 50.0},
+    #'tempo': {'alto': 190.0, 'medio': 110.0, 'baixo': 50.0},
 }
 
 generos_mapeamento = {

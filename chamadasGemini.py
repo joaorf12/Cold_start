@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 import time
 import google.generativeai as genai
+import json
 
 load_dotenv()
 
@@ -11,19 +12,27 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY_1"))
 
 # Define o modelo
-model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+model_gemini = genai.GenerativeModel('gemini-2.5-flash')
 
 
 def chamada_api_retry(func, *args, max_retries=10, wait_seconds=20, **kwargs):
     """
     Executa uma função de API com retry automático em caso de erros de servidor.
     """
+    from google.api_core import exceptions as gcp_exceptions # Importa exceções de API
+
     for tentativa in range(max_retries):
         try:
             return func(*args, **kwargs)
+        except gcp_exceptions.ResourceExhausted as e:
+            # Erro 429: Limite de taxa excedido.
+            print(f"Erro 429 (ResourceExhausted), aguardando {wait_seconds} segundos... (tentativa {tentativa + 1}/{max_retries})")
+            time.sleep(wait_seconds)
         except Exception as e:
+            # Outros erros de API, incluindo 404
+            print(f"Erro de API ({type(e).__name__}), aguardando {wait_seconds} segundos... (tentativa {tentativa + 1}/{max_retries})")
+            print(f"Detalhes do erro: {e}")
             if tentativa < max_retries - 1:
-                print(f"Erro de API, aguardando {wait_seconds} segundos... (tentativa {tentativa + 1}/{max_retries})")
                 time.sleep(wait_seconds)
             else:
                 raise
@@ -147,7 +156,7 @@ def criar_persona_gemini(user_data, preference_map):
     5. Personalidade e hábitos de consumo musical.
     
     Sua resposta deve ser estruturada com cabeçalhos de markdown (##) para cada seção.
-    Ao final da sua resposta, inclua **apenas um bloco JSON** com as seguintes chaves e informações:
+    Ao final da sua resposta, **IMEDIATAMENTE** após a seção 5, inclua **apenas um bloco JSON** com as seguintes chaves e informações:
     - "estilo_musical": O principal estilo musical da persona.
     - "generos": Uma lista de 3 a 5 gêneros mais relevantes para esta persona, que reflitam uma variedade de influências.
     - "subgeneros": Uma lista de 3 a 5 subgêneros mais relevantes e específicos.
@@ -162,31 +171,59 @@ def criar_persona_gemini(user_data, preference_map):
       "artistas_relacionados": ["Fleet Foxes", "The Lumineers", "Bon Iver"]
     }}
     ```
+    SUA RESPOSTA DEVE CONTER O BLOCO JSON PREENCHIDO ANTES DE QUALQUER OUTRO TEXTO EXTRA.
     """
 
     response_text = chamada_api_retry(
         lambda: model_gemini.generate_content(prompt).text
     )
 
-    # Extrair o bloco JSON da resposta
-    match = re.search(r'\{.*\}', response_text, re.DOTALL)
+    # NOVO BLOCO DE EXTRAÇÃO MAIS ROBUSTO
+    # 1. Tenta encontrar o JSON dentro dos marcadores de bloco de código (```json ... ```)
+    match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+
+    # 2. Se falhar, tenta encontrar qualquer bloco JSON { ... } no texto
+    if not match:
+        # Usa '.*?' (non-greedy) para capturar o menor bloco possível de JSON
+        match = re.search(r'(\{.*?)\}', response_text, re.DOTALL)
+        # Se for um bloco { } simples, a regex anterior funciona melhor.
+
+    data = {}
+    json_str_raw = ''
+    json_content_extracted = False
+
     if match:
-        json_str = match.group(0).strip('` \n')
-        json_str = re.sub(r'```json\n|```', '', json_str).strip()
+        json_str_raw = match.group(0).strip()
+
+        # Limpeza: remove os marcadores de bloco de código (```json e ```)
+        json_str = re.sub(r'```json|```', '', json_str_raw, flags=re.IGNORECASE).strip()
+
         try:
-            data = ast.literal_eval(json_str)
+            # Tenta carregar o JSON
+            data = json.loads(json_str)
+
             if not isinstance(data, dict) or 'generos' not in data:
-                raise ValueError("JSON não está no formato esperado.")
+                raise ValueError("Conteúdo JSON não está no formato esperado.")
 
-            persona_text = response_text.replace(match.group(0), '').strip()
-            return {'persona_text': persona_text, 'persona_info': data}
+            json_content_extracted = True
 
-        except (ValueError, SyntaxError) as e:
+        except (ValueError, json.JSONDecodeError, SyntaxError) as e:
             print(f"Erro ao decodificar JSON da persona: {e}")
             print(f"JSON problemático: {json_str}")
-            return {'persona_text': response_text, 'persona_info': {}}
+            # Se a decodificação falhar, 'data' permanece vazio.
+
+    if json_content_extracted:
+        # Imprime o JSON para debug
+        print("\n--- JSON DA PERSONA DECODIFICADO (DEBUG) ---")
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        print("---------------------------------------------\n")
+
+        # Remove o bloco JSON da string de texto da persona
+        persona_text = response_text.replace(json_str_raw, '').strip()
+        return {'persona_text': persona_text, 'persona_info': data}
     else:
-        print("Não foi encontrado bloco JSON na resposta do Gemini.")
+        print("Não foi encontrado ou decodificado o bloco JSON na resposta do Gemini.")
+        # Se falhar, retorna o texto completo, e o JSON vazio:
         return {'persona_text': response_text, 'persona_info': {}}
 
 
