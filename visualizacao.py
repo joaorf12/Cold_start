@@ -9,21 +9,36 @@ def print_playlist_bonita(playlist):
         return
 
     cols = ['name', 'artists', 'popularity', 'artist_genres']
+    # Adiciona 'origem' se existir
+    if 'origem' in playlist.columns:
+        print("passou")
+        cols.append('origem')
+
     data = playlist[cols].copy()
     data['artist_genres'] = data['artist_genres'].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
 
+    # Calcula larguras dinâmicas
     name_width = max(data['name'].str.len().max(), len("Nome")) + 2
     artist_width = max(data['artists'].str.len().max(), len("Artista(s)")) + 2
     pop_width = max(len(str(data['popularity'].max())), len("Popularidade")) + 2
     genres_width = max(data['artist_genres'].str.len().max(), len("Gêneros")) + 2
+    origem_width = max(data['origem'].str.len().max(), len("Origem")) + 2 if 'origem' in data.columns else 0
 
+    # Cabeçalho
     header = f"{'Nome'.ljust(name_width)}{'Artista(s)'.ljust(artist_width)}{'Popularidade'.ljust(pop_width)}{'Gêneros'.ljust(genres_width)}"
+    if 'origem' in data.columns:
+        header += f"{'Origem'.ljust(origem_width)}"
+
     print("\n🎧 Playlist Recomendada:\n")
     print(header)
     print("-" * len(header))
 
+    # Linhas
     for idx, row in data.iterrows():
-        print(f"{row['name'].ljust(name_width)}{row['artists'].ljust(artist_width)}{str(row['popularity']).ljust(pop_width)}{row['artist_genres'].ljust(genres_width)}")
+        linha = f"{row['name'].ljust(name_width)}{row['artists'].ljust(artist_width)}{str(row['popularity']).ljust(pop_width)}{row['artist_genres'].ljust(genres_width)}"
+        if 'origem' in data.columns:
+            linha += f"{row['origem'].ljust(origem_width)}"
+        print(linha)
 
 def plotar_clusters(top_artists, musical_features):
     # Calcula a média das features por cluster
@@ -69,58 +84,133 @@ def plotar_clusters(top_artists, musical_features):
     plt.tight_layout()
     plt.show()
 
-# Adicione esta função ao seu main.py, ou preferencialmente, no seu módulo 'visualizacao'
-def plot_caracteristicas_dominantes(user_profiles_encoded, musical_features, scaler_modelo, k_ideal, top_n_features=5):
+
+def plot_caracteristicas_comparativas_clusters(df_clusters_selecionados, musical_features, top_n_features=5,
+                                               title="Características dos Clusters Atribuídos ao Usuário"):
     """
-    Calcula os centróides dos clusters, inverte o escalonamento para a média original,
-    e plota as características musicais mais dominantes de cada cluster.
+    Plota as características musicais mais dominantes de cada cluster atribuído.
+    O DataFrame de entrada deve ter o ID do cluster no índice.
     """
-    print("\n--- Analisando Centróides dos Clusters ---")
+    num_clusters = len(df_clusters_selecionados)
 
-    # 1. Calcular os centróides (média das features para cada cluster)
-    centroids_scaled = user_profiles_encoded.groupby('cluster')[musical_features].mean()
+    # Define o tamanho da figura: 5 unidades de altura por cluster.
+    plt.figure(figsize=(10, 5 * num_clusters))
 
-    # 2. Inverter o escalonamento para ter as características em sua escala original (ou pseudo-original)
-    # Nota: Precisamos criar um DataFrame de centróides que inclua todas as colunas
-    # que foram usadas no scaler original (X_features_modelo).
-    # Como o scaler_modelo foi ajustado em X_scaled_modelo (que contém demográficos e musicais),
-    # a inversão do escalonamento pode ser complexa.
-    # Para simplificar e mostrar a DOMINÂNCIA, vamos focar nos valores ESCALONADOS,
-    # que indicam o desvio padrão da média (0.0), que já é explicativo.
+    # 1. Plotar cada cluster separadamente
+    for i, cluster_id in enumerate(df_clusters_selecionados.index):
+        # O perfil para o cluster atual
+        perfil = df_clusters_selecionados.loc[cluster_id]
 
-    # 3. Analisar Centróides (Escalonados)
-    # Centróides com valores escalonados (aproximadamente a média das características)
+        # Foca nas 5 características que mais se desviam de zero (média geral),
+        # usando os valores ABSOLUTOS (escalonados) se for o caso,
+        # mas como estamos usando centróides REVERTIDOS, focamos nos valores mais altos.
+        top_features = perfil[musical_features].sort_values(ascending=False).head(top_n_features)
 
-    # Criar uma visualização (Gráfico de Barras) para os 3 primeiros clusters (para evitar sobrecarga)
-    clusters_a_plotar = user_profiles_encoded['cluster'].unique()
+        # 2. Cria o subplot
+        plt.subplot(num_clusters, 1, i + 1)
 
-    plt.figure(figsize=(15, 5 * min(3, len(clusters_a_plotar))))  # Plota os 3 primeiros
+        # Usar os valores de volta à escala original (top_features.values)
+        plt.bar(top_features.index, top_features.values, color='skyblue')
 
-    for i, cluster_id in enumerate(clusters_a_plotar[:3]):
-        # Seleciona o centróide escalonado
-        centroid = centroids_scaled.loc[cluster_id]
-
-        # Filtra apenas as características musicais de interesse
-        musical_centroid = centroid[musical_features]
-
-        # Calcula a relevância (distância absoluta da média 0.0)
-        relevance = musical_centroid.abs().sort_values(ascending=False)
-        top_features = relevance.head(top_n_features)
-
-        # Plota os desvios
-        plt.subplot(min(3, len(clusters_a_plotar)), 1, i + 1)
-
-        # Cores: Positivo (acima da média) é azul, Negativo (abaixo da média) é vermelho
-        colors = ['red' if musical_centroid.loc[f] < 0 else 'blue' for f in top_features.index]
-
-        # Plota os valores do centróide (que representam o desvio padrão da média)
-        plt.bar(top_features.index, musical_centroid.loc[top_features.index], color=colors)
-
-        plt.title(f'Cluster {cluster_id}: {top_n_features} Características Musicais Dominantes (Desvio da Média Geral)',
-                  fontsize=14)
-        plt.ylabel('Desvio Padrão da Média (Escalonado)')
-        plt.axhline(0, color='gray', linewidth=0.8)  # Linha da Média Geral (0.0)
+        plt.title(f'Cluster {cluster_id}: Top {top_n_features} Características Musicais Dominantes', fontsize=14)
+        plt.ylabel('Valor Médio do Atributo')
+        plt.xlabel('Características Musicais')
         plt.xticks(rotation=45, ha='right')
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout()
 
+    # Título geral para a figura (se necessário)
+    plt.suptitle(title, y=1.02, fontsize=16)
+
     plt.show()
+
+def gerar_plots_clusters(user_profiles_encoded, musical_features, genero_col="gender", genero_musical_col="main_genre"):
+    """
+    Gera plots completos para validar os clusters:
+    - Distribuição de gênero (sexo) por cluster
+    - Atributos musicais dominantes por cluster
+    - Gênero musical dominante por cluster
+    - Visualização PCA dos clusters (opcional)
+    """
+
+    # ----------------------------------------------------------------------
+    # 1. PLOT — DISTRIBUIÇÃO DE GÊNERO POR CLUSTER
+    # ----------------------------------------------------------------------
+    print("\n[Plot] Distribuição de gênero (sexo) por cluster...")
+
+    if genero_col in user_profiles_encoded.columns:
+        # caso seja categórico simples: 'gender'
+        gender_counts = user_profiles_encoded.groupby('cluster')[genero_col].value_counts().unstack().fillna(0)
+
+        plt.figure(figsize=(8, 5))
+        gender_counts.plot(kind='bar', stacked=True)
+        plt.title('Distribuição de Gênero por Cluster')
+        plt.xlabel('Cluster')
+        plt.ylabel('Número de Usuários')
+        plt.legend(title='Gênero')
+        plt.tight_layout()
+        plt.show()
+
+    else:
+        # caso tenha sido convertido para one-hot
+        gender_cols = [c for c in user_profiles_encoded.columns if c.startswith("gender_")]
+        if len(gender_cols) > 0:
+            gender_means = user_profiles_encoded.groupby('cluster')[gender_cols].mean()
+
+            plt.figure(figsize=(8, 5))
+            gender_means.plot(kind='bar', stacked=True)
+            plt.title('Proporção de Gêneros por Cluster')
+            plt.xlabel('Cluster')
+            plt.ylabel('Proporção')
+            plt.tight_layout()
+            plt.show()
+
+    # ----------------------------------------------------------------------
+    # 2. PLOT — MÉDIA DOS ATRIBUTOS MUSICAIS POR CLUSTER
+    # ----------------------------------------------------------------------
+    print("\n[Plot] Atributos musicais dominantes por cluster...")
+
+    music_feats_existentes = [f for f in musical_features if f in user_profiles_encoded.columns]
+
+    means_music = user_profiles_encoded.groupby('cluster')[music_feats_existentes].mean()
+
+    plt.figure(figsize=(10, 6))
+    means_music.plot(kind='bar')
+    plt.title('Médias dos Atributos Musicais por Cluster')
+    plt.xlabel('Cluster')
+    plt.ylabel('Valor Médio')
+    plt.tight_layout()
+    plt.show()
+
+    # ----------------------------------------------------------------------
+    # 3. PLOT — DISTRIBUIÇÃO DOS GÊNEROS MUSICAIS POR CLUSTER
+    # ----------------------------------------------------------------------
+    print("\n[Plot] Gênero musical dominante por cluster...")
+
+    if genero_musical_col in user_profiles_encoded.columns:
+        # gênero musical categórico simples
+        genre_counts = user_profiles_encoded.groupby('cluster')[genero_musical_col].value_counts().unstack().fillna(0)
+
+        plt.figure(figsize=(12, 7))
+        genre_counts.plot(kind='bar', stacked=True)
+        plt.title('Distribuição dos Gêneros Musicais por Cluster')
+        plt.xlabel('Cluster')
+        plt.ylabel('Frequência')
+        plt.tight_layout()
+        plt.show()
+
+    else:
+        # caso seja one-hot encoding dos gêneros
+        genre_cols = [c for c in user_profiles_encoded.columns if c.startswith("genre_")]
+        if len(genre_cols) > 0:
+            genre_means = user_profiles_encoded.groupby('cluster')[genre_cols].mean()
+
+            plt.figure(figsize=(12, 6))
+            genre_means.plot(kind='bar', stacked=True)
+            plt.title('Proporção de Gêneros Musicais por Cluster')
+            plt.xlabel('Cluster')
+            plt.ylabel('Proporção')
+            plt.tight_layout()
+            plt.show()
+
+    print("\n✔️ Todos os plots foram gerados com sucesso.")
